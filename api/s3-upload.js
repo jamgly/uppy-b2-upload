@@ -1,28 +1,39 @@
-// A simple Node.js backend using the official AWS SDK for S3-compatible storage.
-// Vercel or Netlify will run this code as a function.
-
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 
 // This function will handle the request from your Webflow page.
 export default async function handler(req, res) {
-  // We'll get the file name from the request made by Uppy.
-  // The 'file' variable will be the object Uppy sends us.
-  const file = req.body;
+  // Set CORS headers to allow requests from your Webflow domain
+  res.setHeader('Access-Control-Allow-Origin', 'https://www.send-files.com');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Requested-With, tus-resumable, tus-version, tus-max-size, tus-extension, Upload-Offset, Upload-Length');
 
-  if (!file || !file.name) {
-    return res.status(400).json({ error: "File name is required" });
+  // Handle the OPTIONS preflight request
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  
+  // Uppy sends a POST request with the file details in the body
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // Use the environment variables we set in Vercel.
+  const file = req.body;
+
+  if (!file || !file.name || !file.type) {
+    return res.status(400).json({ error: 'File details are required' });
+  }
+
+  // Use the environment variables from your Vercel settings.
   const B2_APPLICATION_KEY_ID = process.env.B2_APPLICATION_KEY_ID;
   const B2_APPLICATION_KEY = process.env.B2_APPLICATION_KEY;
   const B2_BUCKET_NAME = process.env.B2_BUCKET_NAME;
   const B2_ENDPOINT = process.env.B2_ENDPOINT;
 
-  // Configure the S3 client to talk to Backblaze.
+  // Configure the S3 client for Backblaze B2.
   const client = new S3Client({
-    region: "us-east-1", // You can use any region, B2 ignores it.
+    region: "us-east-1", // Any region will work, B2 ignores it.
     endpoint: B2_ENDPOINT,
     credentials: {
       accessKeyId: B2_APPLICATION_KEY_ID,
@@ -31,22 +42,22 @@ export default async function handler(req, res) {
   });
 
   // Here we set the full path for the file. 
-  // You can customize this to include the user's name or a unique ID.
+  // Make sure to include the file name to avoid overwriting files.
   const key = `user-uploads/${file.name}`;
 
-  // Create a command to put the object into the bucket.
-  const command = new PutObjectCommand({
-    Bucket: B2_BUCKET_NAME,
-    Key: key,
-    ContentType: file.type,
-  });
-
   try {
-    // This is the magic part: we generate a secure, temporary URL.
-    const url = await getSignedUrl(client, command, { expiresIn: 3600 }); // Expires in 1 hour
+    // This function creates the pre-signed POST data with all the required fields.
+    const { url, fields } = await createPresignedPost(client, {
+      Bucket: B2_BUCKET_NAME,
+      Key: key,
+      Expires: 3600, // Credentials expire in 1 hour
+      Fields: {
+        'Content-Type': file.type,
+      },
+    });
 
-    // Send the URL back to Uppy on the frontend.
-    return res.status(200).json({ url: url });
+    // Uppy expects both the URL and the fields object in the response.
+    return res.status(200).json({ url, fields });
 
   } catch (error) {
     console.error("Error generating signed URL:", error);
